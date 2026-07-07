@@ -26,6 +26,15 @@ https://jessele131.github.io/gomoku-html/
 - **计时系统** — 黑白双方独立计时
 - **响应式布局** — 适配桌面和移动端
 
+## 🖥️ Windows 桌面版
+
+提供两种格式：
+
+| 文件 | 大小 | 说明 |
+|------|------|------|
+| `流光五子棋-Portable-1.0.0.exe` | ~69 MB | 便携版，无需安装，双击即玩 |
+| `流光五子棋 Setup 1.0.0.exe` | ~69 MB | 安装版，支持自定义安装路径、创建桌面快捷方式 |
+
 ## 🛠️ 技术栈
 
 纯前端单文件，无需任何依赖：
@@ -34,20 +43,16 @@ https://jessele131.github.io/gomoku-html/
 - requestAnimationFrame
 - CSS3 动画与毛玻璃效果
 
-## 🖥️ 本地运行
-
-直接双击 `index.html` 在浏览器中打开即可，无需服务器。
-
 ## 📁 文件说明
 
 | 文件 | 说明 |
 |------|------|
 | `index.html` | 完整游戏（单文件，约 35KB） |
-| `gomoku.html` | 同内容备用文件 |
+| `electron-gomoku/` | Electron 桌面版源码 |
 
-## ⚡ Electron 桌面版
+## 🚀 本地运行
 
-项目同时提供 Electron 打包版本，可生成 Windows `.exe` 独立运行程序。
+直接双击 `index.html` 在浏览器中打开即可，无需服务器。
 
 ---
 
