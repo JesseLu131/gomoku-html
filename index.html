@@ -458,6 +458,8 @@ class Game{
     this.sfx=new Sfx();this.rend=null;this.onCh=null;
     this.times={1:0,2:0};this.timer=null;this.t0=null;
     this.superAIMode=false;this.superAI=null;
+    this.tt=new Map();this.killer=[];this.zobrist=[];
+    this.initZobrist();
   }
   init(){this.rst();}
   rst(){
@@ -554,16 +556,24 @@ class Game{
     const vcf=this.vcfSearch(2,8);if(vcf)return vcf;
     // 5. Block opponent VCF
     const opVCF=this.vcfSearch(1,6);if(opVCF)return opVCF;
-    // 6. Iterative deepening minimax
-    let best=cands[0],bestSc=-Infinity;
+    // 6. Iterative deepening with time control
+    this.tt.clear();this.killer=[];
     const me=2,opp=1;
-    // Sort candidates by heuristic for better alpha-beta pruning
     const ordered=cands.slice(0,20).sort((a,b)=>b.h-a.h);
-    for(const m of ordered){
-      this.bd[m.r][m.c]=me;
-      const sc=this.mmEnhanced(maxDepth-1,-Infinity,Infinity,false,me,opp);
-      this.bd[m.r][m.c]=0;
-      if(sc>bestSc){bestSc=sc;best=m;}
+    let best=ordered[0],bestSc=-Infinity;
+    const timeLimit=this.diff==='expert'?4000:this.diff==='hard'?3000:this.diff==='medium'?2000:1000;
+    const start=performance.now();
+    for(let d=1;d<=maxDepth;d++){
+      let localBest=null,localSc=-Infinity;
+      for(const m of ordered){
+        if(performance.now()-start>timeLimit)break;
+        this.bd[m.r][m.c]=me;
+        const sc=this.mmEnhanced(d-1,-Infinity,Infinity,false,me,opp,start,timeLimit);
+        this.bd[m.r][m.c]=0;
+        if(sc>localSc){localSc=sc;localBest=m;}
+      }
+      if(performance.now()-start<=timeLimit){best=localBest;bestSc=localSc;}
+      if(performance.now()-start>timeLimit)break;
     }
     return best;
   }
@@ -739,31 +749,56 @@ class Game{
     }
     return s;
   }
-  mmEnhanced(depth,a,b,isMax,me,opp){
+  mmEnhanced(depth,a,b,isMax,me,opp,start,timeLimit){
+    // Time cutoff
+    if(start!==undefined&&performance.now()-start>timeLimit)return isMax?-Infinity:Infinity;
+    const hash=this.computeHash();
+    const key=hash+'_'+depth+'_'+isMax;
+    if(this.tt.has(key)){
+      const e=this.tt.get(key);
+      if(e.flag==='exact'||(e.flag==='lower'&&e.sc>=b)||(e.flag==='upper'&&e.sc<=a))return e.sc;
+    }
     const ev=this.evalBdEnhanced(me,opp);
-    if(Math.abs(ev)>=5000000||depth===0)return ev;
+    if(Math.abs(ev)>=5000000||depth===0){
+      this.tt.set(key,{sc:ev,flag:'exact'});
+      return ev;
+    }
     const cands=this.candsEnhanced();
     if(cands.length===0)return 0;
-    const ordered=cands.slice(0,12).sort((x,y)=>y.h-x.h);
+    const ordered=cands.slice(0,12).sort((x,y)=>{
+      const k=this.killer[depth];
+      let sx=x.h,sy=y.h;
+      if(k&&k.c===x.c&&k.r===x.r)sx+=5000;
+      if(k&&k.c===y.c&&k.r===y.r)sy+=5000;
+      return sy-sx;
+    });
     if(isMax){
-      let mx=-Infinity;
+      let mx=-Infinity,bestMove=null;
       for(const m of ordered){
+        if(start!==undefined&&performance.now()-start>timeLimit)break;
         this.bd[m.r][m.c]=me;
-        const v=this.mmEnhanced(depth-1,a,b,false,me,opp);
+        const v=this.mmEnhanced(depth-1,a,b,false,me,opp,start,timeLimit);
         this.bd[m.r][m.c]=0;
         mx=Math.max(mx,v);a=Math.max(a,v);
+        if(v>=mx){bestMove=m;}
         if(b<=a)break;
       }
+      if(bestMove)this.killer[depth]=bestMove;
+      this.tt.set(key,{sc:mx,flag:mx>=b?'lower':mx<=a?'upper':'exact'});
       return mx;
     }else{
-      let mn=Infinity;
+      let mn=Infinity,bestMove=null;
       for(const m of ordered){
+        if(start!==undefined&&performance.now()-start>timeLimit)break;
         this.bd[m.r][m.c]=opp;
-        const v=this.mmEnhanced(depth-1,a,b,true,me,opp);
+        const v=this.mmEnhanced(depth-1,a,b,true,me,opp,start,timeLimit);
         this.bd[m.r][m.c]=0;
         mn=Math.min(mn,v);b=Math.min(b,v);
+        if(v<=mn){bestMove=m;}
         if(b<=a)break;
       }
+      if(bestMove)this.killer[depth]=bestMove;
+      this.tt.set(key,{sc:mn,flag:mn<=a?'upper':mn>=b?'lower':'exact'});
       return mn;
     }
   }
@@ -844,6 +879,25 @@ class Game{
   posBonus(c,r){
     const d=Math.abs(c-7)+Math.abs(r-7);
     return (14-d)*3;
+  }
+  initZobrist(){
+    const rng=()=>Math.floor(Math.random()*0x100000000);
+    this.zobrist=[[],[]];
+    for(let p=0;p<2;p++){
+      this.zobrist[p]=[];
+      for(let r=0;r<this.sz;r++){
+        this.zobrist[p][r]=[];
+        for(let c=0;c<this.sz;c++)this.zobrist[p][r][c]=rng();
+      }
+    }
+  }
+  computeHash(){
+    let h=0;
+    for(let r=0;r<this.sz;r++)for(let c=0;c<this.sz;c++){
+      const v=this.bd[r][c];
+      if(v!==0)h^=this.zobrist[v-1][r][c];
+    }
+    return h>>>0;
   }
 }
 
