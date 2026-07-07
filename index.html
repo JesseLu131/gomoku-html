@@ -201,6 +201,7 @@ body{background:#060614;color:#e0e0ff;user-select:none;-webkit-user-select:none}
       <h3>操作</h3>
       <button class="action-btn primary" id="btn-new">🔄 重新开始</button>
       <button class="action-btn" id="btn-undo" disabled>↩️ 悔棋</button>
+      <button class="action-btn" id="btn-check-draw" disabled>🔍 检测平局</button>
       <button class="action-btn danger" id="btn-reset">🗑️ 重置比分</button>
       <div class="toggle-row">
         <span>落子音效</span>
@@ -536,7 +537,7 @@ class Game{
       this.superAI.getMove(this.bd,this.pl).then(mv=>{if(mv&&this.bd[mv.r][mv.c]===0)this.place(mv.c,mv.r);});
       return;
     }
-    const maxDepth=this.diff==='easy'?2:this.diff==='medium'?3:this.diff==='hard'?4:6;
+    const maxDepth=this.diff==='easy'?2:this.diff==='medium'?3:this.diff==='hard'?4:8;
     const mv=this.bestMoveEnhanced(maxDepth);
     if(mv)this.place(mv.c,mv.r);
   }
@@ -559,9 +560,9 @@ class Game{
     // 6. Iterative deepening with time control
     this.tt.clear();this.killer=[];
     const me=2,opp=1;
-    const ordered=cands.slice(0,20).sort((a,b)=>b.h-a.h);
+    const ordered=cands.slice(0,30).sort((a,b)=>b.h-a.h);
     let best=ordered[0],bestSc=-Infinity;
-    const timeLimit=this.diff==='expert'?4000:this.diff==='hard'?3000:this.diff==='medium'?2000:1000;
+    const timeLimit=this.diff==='expert'?5000:this.diff==='hard'?3000:this.diff==='medium'?2000:1000;
     const start=performance.now();
     for(let d=1;d<=maxDepth;d++){
       let localBest=null,localSc=-Infinity;
@@ -638,7 +639,7 @@ class Game{
     const map=new Map();
     // Collect all empty cells near existing stones
     for(let r=0;r<this.sz;r++)for(let c=0;c<this.sz;c++)if(this.bd[r][c]!==0){
-      for(let dr=-2;dr<=2;dr++)for(let dc=-2;dc<=2;dc++){
+      for(let dr=-3;dr<=3;dr++)for(let dc=-3;dc<=3;dc++){
         const nr=r+dr,nc=c+dc;
         if(nr>=0&&nr<this.sz&&nc>=0&&nc<this.sz&&this.bd[nr][nc]===0){
           const k=nc+','+nr;
@@ -655,7 +656,7 @@ class Game{
     }
     let arr=[...map.values()];
     arr.sort((a,b)=>b.h-a.h);
-    return arr.slice(0,Math.min(arr.length,25));
+    return arr.slice(0,Math.min(arr.length,30));
   }
   heuristicScore(c,r){
     let s=0;
@@ -765,7 +766,7 @@ class Game{
     }
     const cands=this.candsEnhanced();
     if(cands.length===0)return 0;
-    const ordered=cands.slice(0,12).sort((x,y)=>{
+    const ordered=cands.slice(0,18).sort((x,y)=>{
       const k=this.killer[depth];
       let sx=x.h,sy=y.h;
       if(k&&k.c===x.c&&k.r===x.r)sx+=5000;
@@ -899,6 +900,21 @@ class Game{
     }
     return h>>>0;
   }
+  detectDraw(){
+    const empties=[];
+    for(let r=0;r<this.sz;r++)for(let c=0;c<this.sz;c++)if(this.bd[r][c]===0)empties.push({c,r});
+    if(empties.length===0)return true;
+    let blackCanWin=false,whiteCanWin=false;
+    for(const m of empties){
+      this.bd[m.r][m.c]=1;
+      if(this.chkWin(m.c,m.r,1))blackCanWin=true;
+      this.bd[m.r][m.c]=2;
+      if(this.chkWin(m.c,m.r,2))whiteCanWin=true;
+      this.bd[m.r][m.c]=0;
+      if(blackCanWin&&whiteCanWin)break;
+    }
+    return !blackCanWin&&!whiteCanWin;
+  }
 }
 
 // ===================== SUPER AI (WebLLM) =====================
@@ -989,6 +1005,17 @@ class UI{
     $('btn-new').addEventListener('click',()=>{this.g.rst();this.upd();});
     $('btn-undo').addEventListener('click',()=>{this.g.undo();this.upd();});
     $('btn-reset').addEventListener('click',()=>{this.g.sc={1:0,2:0};this.upd();});
+    // Check draw button
+    $('btn-check-draw').addEventListener('click',()=>{
+      if(this.g.over)return;
+      const result=this.g.detectDraw();
+      if(result){
+        this.g.over=true;
+        if(this.g.onCh)this.g.onCh('draw');
+      }else{
+        this.showModal('🔍 检测结果','当前局面仍有胜负可能，继续对局！');
+      }
+    });
     // Sound toggle
     $('toggle-sound').addEventListener('click',()=>{
       const sw=$('toggle-sound');
@@ -1052,8 +1079,9 @@ class UI{
     else st.textContent=(g.pl===1?'黑方':'白方')+'执子 — 请落子';
     $('status-dot').style.background=g.over?'#64748b':(g.pl===1?'#22d3ee':'#f472b6');
     $('status-dot').style.boxShadow=g.over?'none':(g.pl===1?'0 0 8px rgba(34,211,238,.5)':'0 0 8px rgba(244,114,182,.5)');
-    // Undo
+    // Undo + Check draw
     $('btn-undo').disabled=g.ms.length===0||g.over;
+    $('btn-check-draw').disabled=g.ms.length===0||g.over;
     // History
     const hb=$('history-box');hb.innerHTML='';
     for(let i=0;i<g.ms.length;i+=2){
