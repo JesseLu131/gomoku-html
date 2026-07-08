@@ -226,7 +226,7 @@ body{background:#060614;color:#e0e0ff;user-select:none;-webkit-user-select:none}
       <div class="think-overlay" id="think-overlay">
         <div style="text-align:center">
           <div class="think-spinner"></div>
-          <div class="think-text">AI 思考中...</div>
+          <div class="think-text" id="think-text">AI 思考中...</div>
         </div>
       </div>
     </div>
@@ -460,12 +460,14 @@ class Game{
     this.times={1:0,2:0};this.timer=null;this.t0=null;
     this.superAIMode=false;this.superAI=null;
     this.tt=new Map();this.killer=[];this.zobrist=[];
+    this.thinking=false;this.thinkingDepth=0;
     this.initZobrist();
   }
   init(){this.rst();}
   rst(){
     this.bd=Array(this.sz).fill(0).map(()=>Array(this.sz).fill(0));
     this.pl=1;this.over=false;this.last=null;this.wline=null;this.ms=[];
+    this.thinking=false;this.thinkingDepth=0;
     this.times={1:0,2:0};this.t0=Date.now();
     this.startTimer();
     if(this.onCh)this.onCh('rst');
@@ -501,7 +503,7 @@ class Game{
     this.pl=this.pl===1?2:1;
     this.t0=Date.now();
     if(this.onCh)this.onCh('move');
-    if(this.mode==='pve'&&this.pl===2&&!this.over)setTimeout(()=>this.aiMove(),250);
+    if(this.mode==='pve'&&this.pl===2&&!this.over)this.aiMove();
     return true;
   }
   undo(){
@@ -530,16 +532,62 @@ class Game{
     }
     return null;
   }
-  // ========== AI ENHANCED ==========
+  // ========== AI ==========
   aiMove(){
     if(this.over)return;
     if(this.superAIMode&&this.superAI&&this.superAI.ready){
       this.superAI.getMove(this.bd,this.pl).then(mv=>{if(mv&&this.bd[mv.r][mv.c]===0)this.place(mv.c,mv.r);});
       return;
     }
-    const maxDepth=this.diff==='easy'?2:this.diff==='medium'?3:this.diff==='hard'?4:8;
-    const mv=this.bestMoveEnhanced(maxDepth);
-    if(mv)this.place(mv.c,mv.r);
+    const timeLimit=this.diff==='expert'?8000:this.diff==='hard'?5000:this.diff==='medium'?3000:1000;
+    const start=performance.now();
+    this.thinking=true;
+    if(this.onCh)this.onCh('thinking',0);
+    // Generate candidates
+    let cands=this.candsEnhanced();
+    if(cands.length===0){this.thinking=false;return;}
+    // 1. Immediate win
+    for(const m of cands){this.bd[m.r][m.c]=2;const w=this.chkWin(m.c,m.r,2);this.bd[m.r][m.c]=0;if(w){this.thinking=false;this.place(m.c,m.r);return;}}
+    // 2. Must block
+    for(const m of cands){this.bd[m.r][m.c]=1;const w=this.chkWin(m.c,m.r,1);this.bd[m.r][m.c]=0;if(w){this.thinking=false;this.place(m.c,m.r);return;}}
+    // 3. Opening book
+    if(this.ms.length<=4){const om=this.openingMove();if(om){this.thinking=false;this.place(om.c,om.r);return;}}
+    let bestMv=cands[0];
+    let depth=0;
+    const me=2,opp=1;
+    const searchNext=()=>{
+      if(this.over||!this.thinking)return;
+      depth++;
+      const used=performance.now()-start;
+      if(used>=timeLimit||depth>12){
+        this.thinking=false;
+        if(this.onCh)this.onCh('thinking_done');
+        if(bestMv&&this.bd[bestMv.r][bestMv.c]===0)this.place(bestMv.c,bestMv.r);
+        return;
+      }
+      if(this.onCh)this.onCh('thinking',depth);
+      this.tt.clear();this.killer=[];
+      // Sort by previous depth scores if available
+      if(depth>1)cands.sort((a,b)=>(b.lastSc||0)-(a.lastSc||0));
+      let localBest=null,localSc=-Infinity;
+      for(const m of cands){
+        if(performance.now()-start>=timeLimit)break;
+        this.bd[m.r][m.c]=me;
+        const sc=this.mmEnhanced(depth-1,-Infinity,Infinity,false,me,opp,start,timeLimit);
+        this.bd[m.r][m.c]=0;
+        m.lastSc=sc;
+        if(sc>localSc){localSc=sc;localBest=m;}
+      }
+      if(localBest)bestMv=localBest;
+      setTimeout(searchNext,0);
+    };
+    searchNext();
+  }
+  openingMove(){
+    if(this.ms.length===0)return{c:7,r:7};
+    if(this.ms.length===1){const m0=this.ms[0];if(m0.c===7&&m0.r===7)return{c:6,r:7};return{c:7,r:7};}
+    if(this.ms.length===2){const m1=this.ms[1];return{c:Math.max(0,Math.min(14,14-m1.c)),r:Math.max(0,Math.min(14,14-m1.r))};}
+    return null;
   }
   bestMoveEnhanced(maxDepth){
     if(this.ms.length===0)return{c:7,r:7};
@@ -637,9 +685,9 @@ class Game{
   }
   candsEnhanced(){
     const map=new Map();
-    // Collect all empty cells near existing stones
+    // Collect all empty cells near existing stones (range 4)
     for(let r=0;r<this.sz;r++)for(let c=0;c<this.sz;c++)if(this.bd[r][c]!==0){
-      for(let dr=-3;dr<=3;dr++)for(let dc=-3;dc<=3;dc++){
+      for(let dr=-4;dr<=4;dr++)for(let dc=-4;dc<=4;dc++){
         const nr=r+dr,nc=c+dc;
         if(nr>=0&&nr<this.sz&&nc>=0&&nc<this.sz&&this.bd[nr][nc]===0){
           const k=nc+','+nr;
@@ -656,99 +704,52 @@ class Game{
     }
     let arr=[...map.values()];
     arr.sort((a,b)=>b.h-a.h);
-    return arr.slice(0,Math.min(arr.length,30));
+    return arr.slice(0,Math.min(arr.length,40));
   }
   heuristicScore(c,r){
     let s=0;
     const d=Math.abs(c-7)+Math.abs(r-7);
-    s+=(14-d)*5;
-    if((c===3||c===7||c===11)&&(r===3||r===7||r===11))s+=20;
-    // Pattern scoring at this position
+    s+=(14-d)*6;
+    if((c===3||c===7||c===11)&&(r===3||r===7||r===11))s+=25;
+    // Pattern scoring: evaluate both attack and defense at this position
     const ds=[[1,0],[0,1],[1,1],[1,-1]];
     for(const[dx,dy]of ds){
-      const myPat=this.evalPattern(c,r,dx,dy,2);
-      const opPat=this.evalPattern(c,r,dx,dy,1);
-      s+=myPat*1.2;
-      s+=opPat*0.9; // defend
+      const myPat=this.evalPosPattern(c,r,dx,dy,2);
+      const opPat=this.evalPosPattern(c,r,dx,dy,1);
+      s+=myPat*1.3;
+      s+=opPat*1.0;
     }
     return s;
   }
-  // Evaluate pattern if player places at (c,r) along direction (dx,dy)
-  evalPattern(c,r,dx,dy,pl){
+  evalPosPattern(c,r,dx,dy,pl){
+    // Evaluate the pattern created by placing pl at (c,r) along direction (dx,dy)
     this.bd[r][c]=pl;
-    let score=0;
     const opp=pl===1?2:1;
-    // Count consecutive stones
-    let cnt=1,leftEmpty=0,rightEmpty=0,leftBlock=false,rightBlock=false;
-    // Left side
-    for(let d=1;d<=4;d++){
-      const nc=c-dx*d,nr=r-dy*d;
-      if(nr<0||nr>=this.sz||nc<0||nc>=this.sz){leftBlock=true;break;}
-      const v=this.bd[nr][nc];
-      if(v===pl)cnt++;
-      else if(v===0){leftEmpty++;break;}
-      else{leftBlock=true;break;}
-    }
-    // Right side
-    for(let d=1;d<=4;d++){
-      const nc=c+dx*d,nr=r+dy*d;
-      if(nr<0||nr>=this.sz||nc<0||nc>=this.sz){rightBlock=true;break;}
-      const v=this.bd[nr][nc];
-      if(v===pl)cnt++;
-      else if(v===0){rightEmpty++;break;}
-      else{rightBlock=true;break;}
-    }
-    this.bd[r][c]=0;
-    // Score based on pattern
-    if(cnt>=5)score+=10000000; // five
-    else if(cnt===4){
-      if(leftEmpty>0&&rightEmpty>0)score+=500000; // open four
-      else if(leftEmpty>0||rightEmpty>0)score+=100000; // closed four
-    }else if(cnt===3){
-      if(leftEmpty>0&&rightEmpty>0)score+=25000; // open three
-      else if(leftEmpty>0||rightEmpty>0)score+=3000; // closed three
-    }else if(cnt===2){
-      if(leftEmpty>0&&rightEmpty>0)score+=800; // open two
-      else if(leftEmpty>0||rightEmpty>0)score+=150; // closed two
-    }
-    // Special: check for gap patterns (like X_XX)
-    if(cnt<4){
-      this.bd[r][c]=pl;
-      const line=this.extractLine(c,r,dx,dy,pl);
-      this.bd[r][c]=0;
-      score+=this.scoreGapPattern(line,pl);
-    }
-    return score;
-  }
-  extractLine(c,r,dx,dy,pl){
-    const arr=[];
+    // Collect line: 4 cells each side
+    const line=[];
     for(let i=-4;i<=4;i++){
       const nc=c+dx*i,nr=r+dy*i;
-      if(nr>=0&&nr<this.sz&&nc>=0&&nc<this.sz)arr.push(this.bd[nr][nc]);
+      if(nr>=0&&nr<this.sz&&nc>=0&&nc<this.sz)line.push(this.bd[nr][nc]);
     }
-    return arr;
-  }
-  scoreGapPattern(arr,pl){
-    const opp=pl===1?2:1;
-    let s=0;
-    // Check for split patterns in 6-length windows
-    for(let i=0;i<=arr.length-6;i++){
-      const seg=arr.slice(i,i+6);
-      const pc=seg.filter(x=>x===pl).length;
-      const oc=seg.filter(x=>x===opp).length;
-      const ec=seg.filter(x=>x===0).length;
-      if(oc>0||ec<2)continue;
-      // Patterns: XX_X_X, X_XXX_, etc. (4 stones with gaps in 6 cells)
-      if(pc===4){
-        // Check if it's a viable gap pattern
-        const idx=seg.map((x,idx)=>x===pl?idx:-1).filter(x=>x>=0);
-        let maxGap=0;
-        for(let j=1;j<idx.length;j++)maxGap=Math.max(maxGap,idx[j]-idx[j-1]);
-        if(maxGap<=3)s+=20000; // strong gap pattern
-        else s+=5000;
-      }
-    }
-    return s;
+    this.bd[r][c]=0;
+    // Convert to string for pattern matching
+    const s=line.map(v=>v===pl?'X':v===opp?'O':'.').join('');
+    let score=0;
+    // Live five
+    if(s.includes('XXXXX'))score+=10000000;
+    // Open four: .XXXX.
+    else if(s.includes('.XXXX.'))score+=500000;
+    // Closed four variants
+    else if(s.includes('OXXXX.')||s.includes('.XXXXO')||s.includes('.XXX.X.')||s.includes('.X.XXX.')||s.includes('XX.XX'))score+=100000;
+    // Live three: ..XXX.. (with at least one empty each side)
+    else if(s.includes('..XXX..')||s.includes('..XX.X..')||s.includes('..X.XX..'))score+=25000;
+    // Sleep three
+    else if(s.includes('OXXX..')||s.includes('..XXXO')||s.includes('OXX.X.')||s.includes('.X.XXO'))score+=3000;
+    // Live two
+    else if(s.includes('...XX...')||s.includes('...X.X...'))score+=800;
+    // Sleep two
+    else if(s.includes('OXX...')||s.includes('...XXO'))score+=150;
+    return score;
   }
   mmEnhanced(depth,a,b,isMax,me,opp,start,timeLimit){
     // Time cutoff
@@ -766,7 +767,7 @@ class Game{
     }
     const cands=this.candsEnhanced();
     if(cands.length===0)return 0;
-    const ordered=cands.slice(0,18).sort((x,y)=>{
+    const ordered=cands.slice(0,25).sort((x,y)=>{
       const k=this.killer[depth];
       let sx=x.h,sy=y.h;
       if(k&&k.c===x.c&&k.r===x.r)sx+=5000;
@@ -805,81 +806,57 @@ class Game{
   }
   evalBdEnhanced(me,opp){
     let sc=0;
-    // Evaluate all lines through occupied or near-occupied cells
     const ds=[[1,0],[0,1],[1,1],[1,-1]];
     const checked=new Set();
     for(let r=0;r<this.sz;r++)for(let c=0;c<this.sz;c++)if(this.bd[r][c]!==0){
       for(const[dx,dy]of ds){
+        const pr=r-dy,pc=c-dx;
+        if(pr>=0&&pr<this.sz&&pc>=0&&pc<this.sz&&this.bd[pr][pc]!==0)continue;
         const k=r+','+c+','+dx+','+dy;
         if(checked.has(k))continue;
-        const line=this.getLineArr(c,r,dx,dy,6);
+        // Collect the entire line from this starting point
+        const line=[];
+        let cr=r,cc=c;
+        while(cr>=0&&cr<this.sz&&cc>=0&&cc<this.sz){
+          line.push(this.bd[cr][cc]);
+          cr+=dy;cc+=dx;
+        }
         sc+=this.scoreLine(line,me);
-        sc-=this.scoreLine(line,opp);
-        for(let i=0;i<line.length;i++)checked.add((r+dy*i)+','+(c+dx*i)+','+dx+','+dy);
+        sc-=this.scoreLine(line,opp)*0.9;
+        checked.add(k);
       }
     }
-    // Positional bonus
+    // Positional bonus for stones
     for(let r=0;r<this.sz;r++)for(let c=0;c<this.sz;c++){
       if(this.bd[r][c]===me)sc+=this.posBonus(c,r);
-      else if(this.bd[r][c]===opp)sc-=this.posBonus(c,r)*0.5;
+      else if(this.bd[r][c]===opp)sc-=this.posBonus(c,r)*0.4;
     }
     return sc;
   }
-  getLineArr(c,r,dx,dy,len){
-    const arr=[];
-    for(let i=-len;i<=len;i++){
-      const nc=c+dx*i,nr=r+dy*i;
-      if(nr>=0&&nr<this.sz&&nc>=0&&nc<this.sz)arr.push(this.bd[nr][nc]);
-    }
-    return arr;
-  }
-  scoreLine(arr,pl){
+  scoreLine(cells,pl){
     const opp=pl===1?2:1;
     let mx=0;
-    // Scan all 5-length windows
-    for(let s=0;s<=arr.length-5;s++){
-      const seg=arr.slice(s,s+5);
-      const pc=seg.filter(x=>x===pl).length;
-      const oc=seg.filter(x=>x===opp).length;
-      if(oc>0)continue;
-      let v=0;
-      if(pc===5)v=10000000;
-      else if(pc===4)v=100000;
-      else if(pc===3)v=8000;
-      else if(pc===2)v=500;
-      else if(pc===1)v=30;
-      mx=Math.max(mx,v);
-    }
-    // Scan 6-length for open-ended patterns
-    for(let s=0;s<=arr.length-6;s++){
-      const seg=arr.slice(s,s+6);
-      if(seg[0]!==0||seg[5]!==0)continue;
-      const pc=seg.filter((x,i)=>i>0&&i<5&&x===pl).length;
-      const oc=seg.filter((x,i)=>i>0&&i<5&&x===opp).length;
-      if(oc>0)continue;
-      let v=0;
-      if(pc===4)v=500000;
-      else if(pc===3)v=30000;
-      else if(pc===2)v=1500;
-      mx=Math.max(mx,v);
-    }
-    // Double threat detection (7-length)
-    for(let s=0;s<=arr.length-7;s++){
-      const seg=arr.slice(s,s+7);
-      if(seg[0]!==0||seg[6]!==0)continue;
-      const mid=seg.slice(1,6);
-      const pc=mid.filter(x=>x===pl).length;
-      const oc=mid.filter(x=>x===opp).length;
-      if(oc>0||pc!==3)continue;
-      // Check if it's a split three (like X_XX or XX_X)
-      const gaps=mid.filter(x=>x===0).length;
-      if(gaps===2)mx=Math.max(mx,20000);
-    }
+    const n=cells.length;
+    const s=cells.map(v=>v===pl?'X':v===opp?'O':'.').join('');
+    // Five in a row
+    if(s.includes('XXXXX'))return 10000000;
+    // Open four
+    if(s.includes('.XXXX.'))mx=Math.max(mx,500000);
+    // Closed four / jump four
+    if(s.includes('OXXXX.')||s.includes('.XXXXO')||s.includes('.XXX.X.')||s.includes('.X.XXX.')||s.includes('XX.XX'))mx=Math.max(mx,100000);
+    // Open three / jump open three
+    if(s.includes('..XXX..')||s.includes('..XX.X..')||s.includes('..X.XX..'))mx=Math.max(mx,25000);
+    // Sleep three
+    if(s.includes('OXXX..')||s.includes('..XXXO')||s.includes('OXX.X.')||s.includes('.X.XXO')||s.includes('O.X.XX')||s.includes('XX.X.O'))mx=Math.max(mx,3000);
+    // Open two
+    if(s.includes('...XX...')||s.includes('...X.X...'))mx=Math.max(mx,800);
+    // Sleep two
+    if(s.includes('OXX...')||s.includes('...XXO')||s.includes('O.X..'))mx=Math.max(mx,150);
     return mx;
   }
   posBonus(c,r){
     const d=Math.abs(c-7)+Math.abs(r-7);
-    return (14-d)*3;
+    return (14-d)*4;
   }
   initZobrist(){
     const rng=()=>Math.floor(Math.random()*0x100000000);
@@ -1049,6 +1026,8 @@ class UI{
     $('modal').addEventListener('click',e=>{if(e.target===$('modal'))this.hideModal();});
   }
   onCh(t,d){
+    if(t==='thinking'){this.g.thinkingDepth=d;this.upd();return;}
+    if(t==='thinking_done'){this.g.thinking=false;this.g.thinkingDepth=0;this.upd();return;}
     this.upd();
     if(t==='win'){
       const n={1:'黑方',2:(this.g.mode==='pve'?'AI 白方':'白方')};
@@ -1075,7 +1054,8 @@ class UI{
     // Status
     const st=$('status-text');
     if(g.over)st.textContent='对局结束 — 点击再来一局';
-    else if(g.mode==='pve'&&g.pl===2)st.textContent='AI 思考中...';
+    else if(g.mode==='pve'&&g.pl===2&&g.thinking)st.textContent='AI 深度: '+(g.thinkingDepth||0)+' 思考中...';
+    else if(g.mode==='pve'&&g.pl===2)st.textContent='AI 准备中...';
     else st.textContent=(g.pl===1?'黑方':'白方')+'执子 — 请落子';
     $('status-dot').style.background=g.over?'#64748b':(g.pl===1?'#22d3ee':'#f472b6');
     $('status-dot').style.boxShadow=g.over?'none':(g.pl===1?'0 0 8px rgba(34,211,238,.5)':'0 0 8px rgba(244,114,182,.5)');
@@ -1093,7 +1073,11 @@ class UI{
     }
     hb.scrollTop=hb.scrollHeight;
     // Think overlay
-    $('think-overlay').classList.toggle('show',g.mode==='pve'&&g.pl===2&&!g.over);
+    $('think-overlay').classList.toggle('show',g.mode==='pve'&&g.pl===2&&!g.over&&g.thinking);
+    if(g.thinking&&$('think-text')){
+      const d=g.thinkingDepth||0;
+      $('think-text').textContent=d>0?'AI 深度: '+d+' 思考中...':'AI 思考中...';
+    }
   }
   showModal(t,s){
     $('modal-icon').textContent=t.split(' ')[0];
